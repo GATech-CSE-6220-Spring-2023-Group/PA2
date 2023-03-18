@@ -5,8 +5,23 @@
 #include <vector>
 
 using std::string;
+using std::vector;
 
 constexpr int ROOT = 0;
+
+void quicksort(vector<int>& arr, int left, int right) {
+    if (left >= right) return;
+
+    const int pivot = arr[left + (right - left) / 2];
+    int i = left, j = right;
+    while (i <= j) {
+        while (arr[i] < pivot) i++;
+        while (arr[j] > pivot) j--;
+        if (i <= j) std::swap(arr[i++], arr[j--]);
+    }
+    quicksort(arr, left, j);
+    quicksort(arr, i, right);
+}
 
 int main(int argc, char* argv[]) {
     if (argc < 3) throw std::invalid_argument("Usage: `pqsort {input_file} {output_file}`");
@@ -19,7 +34,7 @@ int main(int argc, char* argv[]) {
     const bool is_root = world_rank == ROOT;
 
     int n; // Number of integers to sort.
-    std::vector<int> all_numbers;
+    vector<int> all_numbers;
 
     if (is_root) {
         const string input_file_path = argv[1];
@@ -39,20 +54,16 @@ int main(int argc, char* argv[]) {
     MPI_Bcast(&n, 1, MPI_INT, ROOT, MPI_COMM_WORLD);
 
     const int n_local = n / world_size; // Number of integers to sort on this process. TODO handle `n % world_size != 0`.
-    std::vector<int> local_numbers_unsorted(n_local); // Numbers to sort on this process.
+    vector<int> local_numbers(n_local); // Numbers to sort on this process.
 
     // Block-distribute the array to all processors
-    MPI_Scatter(&all_numbers[0], n_local, MPI_INT, &local_numbers_unsorted[0], n_local, MPI_INT, ROOT, MPI_COMM_WORLD);
+    MPI_Scatter(&all_numbers[0], n_local, MPI_INT, &local_numbers[0], n_local, MPI_INT, ROOT, MPI_COMM_WORLD);
 
-    int local_numbers_sorted[n];
-
-    // For now, just copy the unsorted numbers to the sorted numbers.
     const double start_time_s = MPI_Wtime();
-    for (int i = 0; i < n; i++) {
-        local_numbers_sorted[i] = local_numbers_unsorted[i];
-    }
+    quicksort(local_numbers, 0, n_local - 1); // For now, each process sorts its own numbers.
+
     // Send numbers to root, overwriting the `all_numbers` vector.
-    MPI_Gather(&local_numbers_sorted[0], n_local, MPI_INT,  &all_numbers[0], n_local, MPI_INT, ROOT, MPI_COMM_WORLD);
+    MPI_Gather(&local_numbers[0], n_local, MPI_INT,  &all_numbers[0], n_local, MPI_INT, ROOT, MPI_COMM_WORLD);
     const double end_time_s = MPI_Wtime();
 
     if (is_root) {
