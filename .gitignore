@@ -1,0 +1,8 @@
+pqsort
+**/**.out
+**/**.aux
+**/**.fdb_latexmk
+**/**.fls
+**/**.log
+**/**.synctex.gz
+.vscode
