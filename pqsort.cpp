@@ -1,6 +1,7 @@
 #include <fstream>
 #include <iostream>
 #include <mpi.h>
+#include <numeric>
 #include <random>
 #include <string>
 #include <vector>
@@ -34,12 +35,10 @@ void quicksort_serial(vector<int>& values, int left, int right) {
   Otherwise, sort in parallel as follows:
   * All processors in `comm` generate a random number `k` between 0 and m − 1.
   * The processor that has the pivot broadcasts it to all processors in the communicator.
-  * Each processor partitions its values into two subarrays containing:
-    1) `values_l_local`: values <= pivot, of size `m_l_local`, and
-    2) `values_r_local`: values > pivot, of size `m_r_local`.
+  * Each processor partitions its values into two subarrays, with left `m_l_local` values <= pivot and right `m_r_local` values > pivot.
   * Use an `AllGather` to gather the `m_l_local` and `m_r_local` subarray sizes for each processor across every processor in `comm`,
     storing in arrays `M_l` and `M_r` respectively.
-  * Using `M_l` and `M_r`, compute the total number of integers less than or equal to the pivot (`m_l`) and greater than the pivot (`m_r`).
+  * Using `M_l` and `M_r`, compute the total number of integers <= pivot (`m_l`) and > pivot (`m_r`).
   * Partition the `q` processors into two subproblems of sorting `m_l` and `m_r` values by allocating processors proportionally.
   * On each processor, use `M_l` and `M_r` to compute where to send its data and from where to receive its data.
   * Create two new communicators corresponding to the two partitions, and use an `AllToAll` to perform the data transfer.
@@ -69,61 +68,89 @@ void quicksort_parallel(vector<int> &values_local, size_t m, MPI_Comm comm = MPI
     }
     MPI_Bcast(&pivot, 1, MPI_INT, pivot_r, MPI_COMM_WORLD);
 
-    int m_l_local = 0, m_r_local = 0;
-    for (int i = 0; i < values_local.size(); i++) {
-        if (values_local[i] <= pivot) m_l_local++;
-        else m_r_local++;
+    const auto values_local_pre = values_local; // xxx making a copy only for debugging purposes.
+    // Arrange local values so the left `m_l_local` values <= pivot and right `m_r_local` values > pivot.
+    int i = 0, j = m_local - 1;
+    while (i <= j) {
+        while (i <= j && values_local[i] < pivot) i++;
+        while (i <= j && values_local[j] > pivot) j--;
+        if (i <= j) std::swap(values_local[i++], values_local[j--]);
     }
+    const int m_l_local = i, m_r_local = m_local - i;
 
-    // Gather `m_l_local` and `m_r_local` from all processors.
+    // Gather `m_l_local` and `m_r_local` from all processors into `M_l` and `M_r`,
+    // and compute the total number of integers <= pivot (`m_l`) and > pivot (`m_r`).
     vector<int> M_l(q), M_r(q);
     MPI_Allgather(&m_l_local, 1, MPI_INT, &M_l[0], 1, MPI_INT, comm);
     MPI_Allgather(&m_r_local, 1, MPI_INT, &M_r[0], 1, MPI_INT, comm);
+    const int m_l = std::reduce(M_l.begin(), M_l.end());
+    const int m_r = std::reduce(M_r.begin(), M_r.end());
 
-    //  Using `M_l` and `M_r`, compute the total number of integers less than or equal to the pivot (`m_l`) and greater than the pivot (`m_r`).
-    int m_l = 0, m_r = 0;
-    for (int i = 0; i < q; i++) {
-        m_l += M_l[i];
-        m_r += M_r[i];
-    }
+    /* Partition the `q` processors into two subproblems of sorting `m_l` and `m_r` values by allocating processors proportionally. */
 
-    // Partition the `q` processors into two subproblems of sorting `m_l` and `m_r` values by allocating processors proportionally...
-
-    // Compute the number of processors in each group by satisfying the following constraints:
-    // * `q_l + q_r = q` (use all processors)
-    // * `q_l/q_r = m_l/m_r` (assign processors proportionally to problem sizes)
-    // * `q_l > 0, q_r > 0` (assign at least one processor to each group)
+    /** 
+      Compute the number of processors in the left/right groups by satisfying the following constraints:
+      * `q_l + q_r = q` (use all processors)
+      * `q_l/q_r = m_l/m_r` (assign processors proportionally to problem sizes)
+      * `q_l > 0, q_r > 0` (assign at least one processor to each group)
+    */
     const int q_l = std::max(1, int(round(float(q * m_l) / float(m_l + m_r)))); // Round to nearest integer instead of truncating & prevent 0 size.
     const int q_r = q - q_l;
     const bool is_left = r < q_l;
 
-    // Compute where to send and from where to receive data.
+    // Determine where to send and from where to receive data.
     vector<int> send_counts(q), recv_counts(q);
     vector<int> send_displs(q), recv_displs(q);
+    // Distribute all `m_l_local` values <= pivot across the left group,
+    // and all `m_r_local` values > pivot across the right group.
+    int send_remaining = m_l_local;
     for (int i = 0; i < q; i++) {
-        // TODO handle rounding
-        send_counts[i] = M_l[i] + M_r[i];
-        recv_counts[i] = i < q_l ? m_l / q_l : m_r / q_r;
+        if (i == q_l) send_remaining = m_r_local; // Transition to right group.
+        const bool is_qi_left = i < q_l; // Is the processor in the left group?
+        const int group_i = is_qi_left ? i : i - q_l; // Group-relative index.
+        const int chunk_size = is_qi_left ? m_l_local / q_l : m_r_local / q_r; // Number of values to distribute to each group member.
+        const int send_remainder = is_qi_left ? m_l_local % q_l : m_r_local % q_r; // Number of values to distribute across group members.
+        send_counts[i] = std::min(send_remaining, chunk_size + (group_i < send_remainder ? 1 : 0));
+        send_remaining -= send_counts[i];
         send_displs[i] = i == 0 ? 0 : send_displs[i - 1] + send_counts[i - 1];
+    }
+
+    for (int i = 0; i < q; i++) {
+        const int group_i = is_left ? i : i - q_l; // Group-relative index.
+        const int chunk_size = is_left ? M_l[i] / q_l : M_r[i] / q_r; // Number of values to receive from each group member.
+        const int recv_remainder = is_left ? M_l[i] % q_l : M_r[i] % q_r; // Number of values to receive from group members.
+        recv_counts[i] = chunk_size + (group_i < recv_remainder ? 1 : 0);
         recv_displs[i] = i == 0 ? 0 : recv_displs[i - 1] + recv_counts[i - 1];
     }
 
-    // Create two new communicators corresponding to the two partitions.
-    MPI_Comm new_comm;
-    MPI_Comm_split(comm, is_left, r, &new_comm);
-
+    // Debug
     cout << "Processor " << r << '\n';
     cout << "\tpivot " << pivot << '\n';
     cout << "\tm_l = " << m_l << ", m_r = " << m_r << '\n';
     cout << "\tm_l_local = " << m_l_local << ", m_r_local = " << m_r_local << '\n';
     cout << "\tq_l = " << q_l << ", q_r = " << q_r << '\n';
     cout << "\tgroup = " << (is_left ? "left" : "right") << '\n';
-    cout << "\tsend_counts = " << send_counts[r] << ", recv_counts = " << recv_counts[r] << '\n';
-    cout << "\tsend_displs = " << send_displs[r] << ", recv_displs = " << recv_displs[r] << '\n';
+    cout << "\tvalues_local (pre):\n\t\t";
+    for (int i = 0; i < m_local; i++) cout << values_local_pre[i] << ' ';
+    cout << "\n\tvalues_local (post):\n\t\t";
+    for (int i = 0; i < m_local; i++) cout << values_local[i] << ' ';
+    cout << "\n\tsend_counts:\n\t\t";
+    for (int i = 0; i < q; i++) cout << send_counts[i] << ' ';
+    cout << "\n\tsend_displs:\n\t\t";
+    for (int i = 0; i < q; i++) cout << send_displs[i] << ' ';
+    cout << "\n\trecv_counts:\n\t\t";
+    for (int i = 0; i < q; i++) cout << recv_counts[i] << ' ';
+    cout << "\n\trecv_displs:\n\t\t";
+    for (int i = 0; i < q; i++) cout << recv_displs[i] << ' ';
+    cout << '\n';
 
     // Use an `AllToAll` to perform the data transfer.
-    vector<int> recv_values(recv_counts[r]);
-    MPI_Alltoallv(&values_local[0], &send_counts[0], &send_displs[0], MPI_INT, &recv_values[0], &recv_counts[0], &recv_displs[0], MPI_INT, new_comm);
+    vector<int> recv_values(is_left ? m_l / q_l : m_r / q_r);
+    MPI_Alltoallv(&values_local[0], &send_counts[0], &send_displs[0], MPI_INT, &recv_values[0], &recv_counts[0], &recv_displs[0], MPI_INT, comm);
+
+    // Create two new communicators corresponding to the two partitions.
+    MPI_Comm new_comm;
+    MPI_Comm_split(comm, is_left, r, &new_comm);
 
     // Recursively sort the two partitions.
     quicksort_parallel(recv_values, is_left ? m_l : m_r, new_comm);
