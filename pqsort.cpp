@@ -6,7 +6,9 @@
 #include <vector>
 
 using std::string;
+using std::to_string;
 using std::vector;
+using std::cout;
 
 constexpr int ROOT = 0;
 
@@ -49,11 +51,9 @@ void quicksort_parallel(vector<int> &values_local, size_t m, MPI_Comm comm = MPI
     MPI_Comm_rank(comm, &r);
 
     const int m_local = values_local.size();
-    if (q == 0 || m_local == 0) return;
-    if (q == 1) {
-        quicksort_serial(values_local, 0, m_local - 1);
-        return;
-    }
+    if (m_local == 0) return; // Nothing to do.
+    if (q == 0) throw std::runtime_error("quicksort_parallel: Empty communicator assigned " + to_string(m_local) + " values to sort.");
+    if (q == 1) return quicksort_serial(values_local, 0, m_local - 1); // Only one processor in `comm`. Sort serially.
 
     // Use the same random seed on all processors within `comm`, so that each processor generates the same random number.
     static const int seed = 123;
@@ -88,7 +88,47 @@ void quicksort_parallel(vector<int> &values_local, size_t m, MPI_Comm comm = MPI
     }
 
     // Partition the `q` processors into two subproblems of sorting `m_l` and `m_r` values by allocating processors proportionally...
-    // TODO
+
+    // Compute the number of processors in each group by satisfying the following constraints:
+    // * `q_l + q_r = q` (use all processors)
+    // * `q_l/q_r = m_l/m_r` (assign processors proportionally to problem sizes)
+    // * `q_l > 0, q_r > 0` (assign at least one processor to each group)
+    const int q_l = std::max(1, int(round(float(q * m_l) / float(m_l + m_r)))); // Round to nearest integer instead of truncating & prevent 0 size.
+    const int q_r = q - q_l;
+    const bool is_left = r < q_l;
+
+    // Compute where to send and from where to receive data.
+    vector<int> send_counts(q), recv_counts(q);
+    vector<int> send_displs(q), recv_displs(q);
+    for (int i = 0; i < q; i++) {
+        // TODO handle rounding
+        send_counts[i] = M_l[i] + M_r[i];
+        recv_counts[i] = i < q_l ? m_l / q_l : m_r / q_r;
+        send_displs[i] = i == 0 ? 0 : send_displs[i - 1] + send_counts[i - 1];
+        recv_displs[i] = i == 0 ? 0 : recv_displs[i - 1] + recv_counts[i - 1];
+    }
+
+    // Create two new communicators corresponding to the two partitions.
+    MPI_Comm new_comm;
+    MPI_Comm_split(comm, is_left, r, &new_comm);
+
+    cout << "Processor " << r << '\n';
+    cout << "\tpivot " << pivot << '\n';
+    cout << "\tm_l = " << m_l << ", m_r = " << m_r << '\n';
+    cout << "\tm_l_local = " << m_l_local << ", m_r_local = " << m_r_local << '\n';
+    cout << "\tq_l = " << q_l << ", q_r = " << q_r << '\n';
+    cout << "\tgroup = " << (is_left ? "left" : "right") << '\n';
+    cout << "\tsend_counts = " << send_counts[r] << ", recv_counts = " << recv_counts[r] << '\n';
+    cout << "\tsend_displs = " << send_displs[r] << ", recv_displs = " << recv_displs[r] << '\n';
+
+    // Use an `AllToAll` to perform the data transfer.
+    vector<int> recv_values(recv_counts[r]);
+    MPI_Alltoallv(&values_local[0], &send_counts[0], &send_displs[0], MPI_INT, &recv_values[0], &recv_counts[0], &recv_displs[0], MPI_INT, new_comm);
+
+    // Recursively sort the two partitions.
+    quicksort_parallel(recv_values, is_left ? m_l : m_r, new_comm);
+
+    MPI_Comm_free(&new_comm);
 }
 
 int main(int argc, char* argv[]) {
