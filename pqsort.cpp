@@ -9,18 +9,41 @@ using std::vector;
 
 constexpr int ROOT = 0;
 
-void quicksort(vector<int>& arr, int left, int right) {
+void quicksort_serial(vector<int>& values, int left, int right) {
     if (left >= right) return;
 
-    const int pivot = arr[left + (right - left) / 2];
+    const int pivot = values[left + (right - left) / 2];
     int i = left, j = right;
     while (i <= j) {
-        while (arr[i] < pivot) i++;
-        while (arr[j] > pivot) j--;
-        if (i <= j) std::swap(arr[i++], arr[j--]);
+        while (values[i] < pivot) i++;
+        while (values[j] > pivot) j--;
+        if (i <= j) std::swap(values[i++], values[j--]);
     }
-    quicksort(arr, left, j);
-    quicksort(arr, i, right);
+    quicksort_serial(values, left, j);
+    quicksort_serial(values, i, right);
+}
+
+/**
+  If `q = 1`, sort the values serially on group's only processor.
+  Otherwise, sort in parallel as follows:
+  * All processors in `comm` generate a random number `k` between 0 and m − 1.
+  * The processor that has the kth integer (the pivot) broadcasts it to all processors in the communicator.
+  * Each processor partitions its integers values into two subarrays containing:
+    1) `values_l`: values <= pivot, of size `m_l`, and
+    2) `values_r`: values > pivot, of size `m_r`.
+  * Using an `AllGather`, gather the `m_l` and `m_r` subarray sizes for each processor across every processor in `comm`,
+    storing in arrays `M_l` and `M_r` respectively.
+  * Partition the `q` processors into two subproblems of sorting `m_l` values and `m_r` values by allocating processors in proportion to `m_l` and `m_r`.
+  * On each processor, use `M_l` and `M_r` to compute where to send its data and from where to receive its data.
+  * Create two new communicators corresponding to the two partitions, and use an `AllToAll` to perform the data transfer.
+  * Recursively call `quicksort_parallel` within each partition.
+*/
+void quicksort_parallel(vector<int> &values, size_t m, int q, MPI_Comm comm = MPI_COMM_WORLD) {
+    if (q == 1) {
+        quicksort_serial(values, 0, m - 1);
+        return;
+    }
+    // TODO parallel quicksort
 }
 
 int main(int argc, char* argv[]) {
@@ -60,7 +83,9 @@ int main(int argc, char* argv[]) {
     MPI_Scatter(&all_numbers[0], n_local, MPI_INT, &local_numbers[0], n_local, MPI_INT, ROOT, MPI_COMM_WORLD);
 
     const double start_time_s = MPI_Wtime();
-    quicksort(local_numbers, 0, n_local - 1); // For now, each process sorts its own numbers.
+    // For now, pretend we have a communication group of size 1 on each processor,
+    // and just sort each processor's local numbers serially.
+    quicksort_parallel(local_numbers, local_numbers.size(), 1, MPI_COMM_WORLD);
 
     // Send numbers to root, overwriting the `all_numbers` vector.
     MPI_Gather(&local_numbers[0], n_local, MPI_INT,  &all_numbers[0], n_local, MPI_INT, ROOT, MPI_COMM_WORLD);
