@@ -51,7 +51,8 @@ string to_string(vector<int> values) {
   * Using `M_l` and `M_r`, compute the total number of integers <= pivot (`m_l`) and > pivot (`m_r`).
   * Partition the `q` processors into two subproblems of sorting `m_l` and `m_r` values by allocating processors proportionally.
   * On each processor, use `M_l` and `M_r` to compute where to send its data and from where to receive its data.
-  * Create two new communicators corresponding to the two partitions, and use an `AllToAll` to perform the data transfer.
+  * Use an `AllToAll` to perform the data transfer.
+  * Create two new communicators corresponding to the two partitions.
   * Recursively call `quicksort_parallel` within each partition.
 */
 void quicksort_parallel(vector<int> &values_local, size_t m, MPI_Comm comm) {
@@ -64,25 +65,40 @@ void quicksort_parallel(vector<int> &values_local, size_t m, MPI_Comm comm) {
     if (q == 0) throw std::runtime_error("quicksort_parallel: Empty communicator assigned " + to_string(m_local) + " values to sort.");
     if (q == 1) return quicksort_serial(values_local, 0, m_local - 1); // Only one processor in `comm`. Sort serially.
 
+    /**
+      Generate a pivot and broadcast the pivot value to all processors in `comm`:
+      * Generate a random number `k` between 0 and m − 1.
+      * Gather the lengths each processor's local array (which could have different sizes due to partitioning) onto every processor in `comm`.
+      * Compute the rank of the processor that has the pivot.
+      * Broadcast the pivot value from the processor that has it.
+    */
+
     // Use the same random seed on all processors within `comm`, so that each processor generates the same random number.
     static const int seed = 123;
-    std::mt19937 rand_gen(seed);
-    std::uniform_int_distribution<> rand_dist(0, m - 1);
+    static std::mt19937 rand_gen(seed);
+    static std::uniform_int_distribution<> rand_dist(0, m - 1);
     const int pivot_i = rand_dist(rand_gen);
-    const int pivot_r = pivot_i / m_local; // Rank of processor that has the pivot.
 
-    int pivot;
-    if (r == pivot_r) {
-        const int local_i = (m / q) * r; // Index of first value on this processor (where `local_values` starts in the comm-wide value array).
-        pivot = values_local[pivot_i - local_i];
+    vector<int> M_local(q); // Holds the lengths of each processor's local array.
+    MPI_Allgather(&m_local, 1, MPI_INT, &M_local[0], 1, MPI_INT, comm);
+    int pivot_r = 0; // Rank of the processor that has the pivot. All processors need to find this to broadcast the pivot value.
+    int pivot; // Only gets populated on the processor that has the pivot.
+    int global_i = 0; // Running sum of the lengths of all processors' local arrays.
+    for (int i = 0; i < q; i++) {
+        if (pivot_i < global_i + M_local[i]) {
+            pivot_r = i;
+            if (i == r) pivot = values_local[pivot_i - global_i];
+            break;
+        }
+        global_i += M_local[i];
     }
-    MPI_Bcast(&pivot, 1, MPI_INT, pivot_r, MPI_COMM_WORLD);
 
-    const auto values_local_pre = values_local; // xxx making a copy only for debugging purposes.
+    MPI_Bcast(&pivot, 1, MPI_INT, pivot_r, comm);
+
     // Arrange local values so the left `m_l_local` values <= pivot and right `m_r_local` values > pivot.
     int i = 0, j = m_local - 1;
     while (i <= j) {
-        while (i <= j && values_local[i] < pivot) i++;
+        while (i <= j && values_local[i] <= pivot) i++;
         while (i <= j && values_local[j] > pivot) j--;
         if (i <= j) std::swap(values_local[i++], values_local[j--]);
     }
@@ -96,7 +112,7 @@ void quicksort_parallel(vector<int> &values_local, size_t m, MPI_Comm comm) {
     const int m_l = std::reduce(M_l.begin(), M_l.end());
     const int m_r = std::reduce(M_r.begin(), M_r.end());
 
-    /* Partition the `q` processors into two subproblems of sorting `m_l` and `m_r` values by allocating processors proportionally. */
+    /* Partition the `q` processors into two subproblems of sorting `m_l` and `m_r` values, allocating processors proportionally. */
 
     /** 
       Compute the number of processors in the left/right groups by satisfying the following constraints:
@@ -104,7 +120,7 @@ void quicksort_parallel(vector<int> &values_local, size_t m, MPI_Comm comm) {
       * `q_l/q_r = m_l/m_r` (assign processors proportionally to problem sizes)
       * `q_l > 0, q_r > 0` (assign at least one processor to each group)
     */
-    int q_l = int(round(float(q * m_l) / float(m_l + m_r))); // Round to nearest integer instead of truncating.
+    int q_l = round(float(q * m_l) / float(m_l + m_r)); // Round to nearest integer instead of truncating.
     int q_r = q - q_l;
     if (q_l == 0) q_l = 1, q_r = q - 1;
     else if (q_r == 0) q_l = q - 1, q_r = 1;
@@ -115,7 +131,6 @@ void quicksort_parallel(vector<int> &values_local, size_t m, MPI_Comm comm) {
     // Then, I'm using this to find all `Alltoallv` values for this processor.
     int all_send_counts[q][q];
     for (int i = 0; i < q; i++) {
-        const bool is_i_left = i < q_l; // Is processor `i` in the left group?
         // Distribute all of processor `i`'s right values across the right group, all its left values across the left group.
         int l_send_remaining = M_l[i], r_send_remaining = M_r[i];
         for (int j = 0; j < q; j++) {
@@ -128,13 +143,11 @@ void quicksort_parallel(vector<int> &values_local, size_t m, MPI_Comm comm) {
         }
     }
 
-    vector<int> send_counts(q);
-    for (int i = 0; i < q; i++) send_counts[i] = all_send_counts[r][i];
-    vector<int> send_displs(q);
-    vector<int> recv_counts(q);
-    vector<int> recv_displs(q);
+    vector<int> send_counts(q), send_displs(q), recv_counts(q), recv_displs(q);
     for (int i = 0; i < q; i++) {
+        send_counts[i] = all_send_counts[r][i];
         send_displs[i] = i == 0 ? 0 : send_displs[i - 1] + send_counts[i - 1];
+
         recv_counts[i] = all_send_counts[i][r];
         recv_displs[i] = i == 0 ? 0 : recv_displs[i - 1] + recv_counts[i - 1];
     }
@@ -148,13 +161,13 @@ void quicksort_parallel(vector<int> &values_local, size_t m, MPI_Comm comm) {
 
     // Debug
     cout << "Processor " << r << '\n'
+        << "\tpivot_i = " << pivot_i << ", pivot_r = " << pivot_r << '\n'
         << "\tpivot " << pivot << '\n'
         << "\tm_l = " << m_l << ", m_r = " << m_r << '\n'
         << "\tm_l_local = " << m_l_local << ", m_r_local = " << m_r_local << '\n'
         << "\tq_l = " << q_l << ", q_r = " << q_r << '\n'
         << "\tgroup = " << (is_left ? "left" : "right") << '\n'
-        << "\tvalues_local (pre):\n\t\t" << to_string(values_local_pre) << '\n'
-        << "\tvalues_local (post):\n\t\t" << to_string(values_local) << '\n'
+        << "\tvalues_local:\n\t\t" << to_string(values_local) << '\n'
         << "\trecv_values:\n\t\t" << to_string(recv_values) << '\n'
         << "\tsend_counts:\n\t\t" << to_string(send_counts) << '\n'
         << "\tsend_displs:\n\t\t" << to_string(send_displs) << '\n'
@@ -180,10 +193,10 @@ int main(int argc, char* argv[]) {
 
     MPI_Init(nullptr, nullptr);
 
-    int world_size, world_rank;
-    MPI_Comm_size(MPI_COMM_WORLD, &world_size);
-    MPI_Comm_rank(MPI_COMM_WORLD, &world_rank);
-    const bool is_root = world_rank == ROOT;
+    int p, r;
+    MPI_Comm_size(MPI_COMM_WORLD, &p);
+    MPI_Comm_rank(MPI_COMM_WORLD, &r);
+    const bool is_root = r == ROOT;
 
     int n; // Number of integers to sort.
     vector<int> values_global;
@@ -205,7 +218,7 @@ int main(int argc, char* argv[]) {
 
     MPI_Bcast(&n, 1, MPI_INT, ROOT, MPI_COMM_WORLD);
 
-    const int n_local = n / world_size; // Number of values to sort on this process. TODO handle `n % world_size != 0`.
+    const int n_local = n / p; // Number of values to sort on this process. TODO handle `n % p != 0`.
     vector<int> values_local(n_local); // Numbers to sort on this process.
 
     // Block-distribute the array to all processors
@@ -221,11 +234,11 @@ int main(int argc, char* argv[]) {
     vector<int> n_local_all;
     vector<int> n_local_displs;
     if (is_root) {
-        n_local_all.resize(world_size);
-        n_local_displs.resize(world_size);
+        n_local_all.resize(p);
+        n_local_displs.resize(p);
     }
     MPI_Gather(&n_local_sorted, 1, MPI_INT, &n_local_all[0], 1, MPI_INT, ROOT, MPI_COMM_WORLD);
-    if (is_root) for (int i = 1; i < world_size; i++) n_local_displs[i] = n_local_displs[i - 1] + n_local_all[i - 1];
+    if (is_root) for (int i = 1; i < p; i++) n_local_displs[i] = n_local_displs[i - 1] + n_local_all[i - 1];
 
     // Gather the values to root, overwriting the `values_global` vector.
     MPI_Gatherv(&values_local[0], values_local.size(), MPI_INT,  &values_global[0], &n_local_all[0], &n_local_displs[0], MPI_INT, ROOT, MPI_COMM_WORLD);
