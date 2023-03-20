@@ -54,7 +54,7 @@ string to_string(vector<int> values) {
   * Create two new communicators corresponding to the two partitions, and use an `AllToAll` to perform the data transfer.
   * Recursively call `quicksort_parallel` within each partition.
 */
-void quicksort_parallel(vector<int> &values_local, size_t m, MPI_Comm comm = MPI_COMM_WORLD) {
+void quicksort_parallel(vector<int> &values_local, size_t m, MPI_Comm comm) {
     int q, r; // Communicator size and rank.
     MPI_Comm_size(comm, &q);
     MPI_Comm_rank(comm, &r);
@@ -216,8 +216,19 @@ int main(int argc, char* argv[]) {
     // and just sort each processor's local numbers serially.
     quicksort_parallel(values_local, n, MPI_COMM_WORLD);
 
-    // Send values to root, overwriting the `values_global` vector.
-    MPI_Gather(&values_local[0], n_local, MPI_INT,  &values_global[0], n_local, MPI_INT, ROOT, MPI_COMM_WORLD);
+    // Gather the lengths and displacements of each processor's local array (which could have different sizes due to partitioning).
+    const int n_local_sorted = values_local.size();
+    vector<int> n_local_all;
+    vector<int> n_local_displs;
+    if (is_root) {
+        n_local_all.resize(world_size);
+        n_local_displs.resize(world_size);
+    }
+    MPI_Gather(&n_local_sorted, 1, MPI_INT, &n_local_all[0], 1, MPI_INT, ROOT, MPI_COMM_WORLD);
+    if (is_root) for (int i = 1; i < world_size; i++) n_local_displs[i] = n_local_displs[i - 1] + n_local_all[i - 1];
+
+    // Gather the values to root, overwriting the `values_global` vector.
+    MPI_Gatherv(&values_local[0], values_local.size(), MPI_INT,  &values_global[0], &n_local_all[0], &n_local_displs[0], MPI_INT, ROOT, MPI_COMM_WORLD);
     const double end_time_s = MPI_Wtime();
 
     if (is_root) {
