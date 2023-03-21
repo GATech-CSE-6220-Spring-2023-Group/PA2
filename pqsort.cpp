@@ -218,6 +218,7 @@ int main(int argc, char* argv[]) {
     MPI_Scatterv(&values_global[0], &n_local_all[0], &n_local_displs[0], MPI_INT, &values_local[0], values_local.size(), MPI_INT, ROOT, MPI_COMM_WORLD);
     const double start_time_s = MPI_Wtime();
     quicksort_parallel(values_local, n, MPI_COMM_WORLD);
+    const double end_time_s = MPI_Wtime();
 
     // Gather the lengths and displacements of each processor's local array (which could have changed sizes due to partitioning).
     const int n_local_sorted = values_local.size();
@@ -231,7 +232,6 @@ int main(int argc, char* argv[]) {
 
     // Gather the values to root, overwriting the `values_global` vector.
     MPI_Gatherv(&values_local[0], values_local.size(), MPI_INT,  &values_global[0], &n_local_sorted_all[0], &n_local_sorted_displs[0], MPI_INT, ROOT, MPI_COMM_WORLD);
-    const double end_time_s = MPI_Wtime();
 
     if (is_root) {
         const string output_file_path = argv[2];
