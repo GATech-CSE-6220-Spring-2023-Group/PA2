@@ -22,6 +22,16 @@ string to_string(vector<int> values) {
     return s;
 }
 
+string to_string(int values[], int size) {
+    string s = "[";
+    for (int i = 0; i < size; i++) {
+        s += to_string(values[i]);
+        if (i < size - 1) s += ", ";
+    }
+    s += "]";
+    return s;
+}
+
 constexpr int ROOT = 0;
 
  /**
@@ -66,7 +76,7 @@ void quicksort_parallel(vector<int> &values_local, size_t m, MPI_Comm comm) {
     static std::uniform_int_distribution<> rand_dist(0, m - 1);
     const int pivot_i = rand_dist(rand_gen);
 
-    vector<int> M_local(q); // Holds the lengths of each processor's local array.
+    int M_local[q]; // Holds the lengths of each processor's local array.
     MPI_Allgather(&m_local, 1, MPI_INT, &M_local[0], 1, MPI_INT, comm);
     int pivot_r = 0; // Rank of the processor that has the pivot. All processors need to find this to broadcast the pivot value.
     int pivot; // Only gets populated on the processor that has the pivot.
@@ -113,38 +123,31 @@ void quicksort_parallel(vector<int> &values_local, size_t m, MPI_Comm comm) {
     else if (q_r == 0) q_l = q - 1, q_r = 1;
     const bool is_left = r < q_l;
 
-    // I found it difficult to calculate both the send and received counts, so at least for now,
-    // I'm calculating the matrix of send counts for _all_ processors on this processor.
-    // Then, I'm using this to find all `Alltoallv` values for this processor.
+    // Calculate the matrix of send counts for _all_ processor.
+    // Then use this matrix to find all `Alltoallv` values for this processor.
+    // Has q^2 complexity but much easier to implement and understand than calculating both send & receive together in a single loop.
     int all_send_counts[q][q];
-    for (int i = 0; i < q; i++) {
-        // Distribute all of processor `i`'s right values across the right group, all its left values across the left group.
-        int l_send_remaining = M_l[i], r_send_remaining = M_r[i];
-        for (int j = 0; j < q; j++) {
-            const bool is_j_left = j < q_l; // Is processor `j` in the left group?
-            const int chunk_size = is_j_left ? M_l[i] / q_l : M_r[i] / q_r; // Number of values to distribute to each group member.
-            const int send_remainder = is_j_left ? M_l[i] % q_l : M_r[i] % q_r; // Number of values to distribute across group members.
-            int *send_remaining = is_j_left ? &l_send_remaining : &r_send_remaining;
-            all_send_counts[i][j] = std::min(*send_remaining, chunk_size + ((is_j_left ? j : j - q_l) < send_remainder ? 1 : 0));
-            *send_remaining -= all_send_counts[i][j];
-        }
+    for (int from_q = 0; from_q < q; from_q++) {
+        auto &send_counts = all_send_counts[from_q];
+        // Initialize all send counts to 0.
+        for (int j = 0; j < q; j++) send_counts[j] = 0;
+        // Distribute all of `from_q`'s left values across the left group.
+        for (int i_l = 0; i_l < M_l[from_q]; i_l++) send_counts[i_l % q_l]++;
+        // Distribute all of `from_q`'s right values across the right group.
+        for (int i_r = 0; i_r < M_r[from_q]; i_r++) send_counts[q_l + (i_r % q_r)]++;
     }
 
-    vector<int> send_counts(q), send_displs(q), recv_counts(q), recv_displs(q);
+    int send_displs[q], recv_counts[q], recv_displs[q];
     for (int i = 0; i < q; i++) {
-        send_counts[i] = all_send_counts[r][i];
-        send_displs[i] = i == 0 ? 0 : send_displs[i - 1] + send_counts[i - 1];
-
+        send_displs[i] = i == 0 ? 0 : send_displs[i - 1] + all_send_counts[r][i - 1];
         recv_counts[i] = all_send_counts[i][r];
         recv_displs[i] = i == 0 ? 0 : recv_displs[i - 1] + recv_counts[i - 1];
     }
 
-    // Transfer the data to create two subproblems of size `m_l` and `m_r`.
-    // TODO the documentation says there is no "in-place" version of "Alltoallv",
-    // but I've had success just using the same buffer for both send and receive.
-    // Need to try this across many test cases, but if it works, we could just resize `values_local` and use it for send/receive.
-    vector<int> recv_values(recv_displs[q - 1] + recv_counts[q - 1]);
-    MPI_Alltoallv(&values_local[0], &send_counts[0], &send_displs[0], MPI_INT, &recv_values[0], &recv_counts[0], &recv_displs[0], MPI_INT, comm);
+    // Transfer the data so that first `q_l` processors have values <= pivot, and the rest have values > pivot.
+    const int n_recv = recv_displs[q - 1] + recv_counts[q - 1]; // Total number of values to receive on this processor.
+    int recv_values[n_recv];
+    MPI_Alltoallv(&values_local[0], &all_send_counts[r][0], &send_displs[0], MPI_INT, &recv_values[0], &recv_counts[0], &recv_displs[0], MPI_INT, comm);
 
     // Debug
     // cout << "p" << r << " pivot_i = " << pivot_i << ", pivot_r = " << pivot_r << '\n'
@@ -154,15 +157,15 @@ void quicksort_parallel(vector<int> &values_local, size_t m, MPI_Comm comm) {
         // << "p" << r << " q_l = " << q_l << ", q_r = " << q_r << '\n'
         // << "p" << r << " group = " << (is_left ? "left" : "right") << '\n'
         // << "p" << r << " values_local: " << to_string(values_local) << '\n'
-        // << "p" << r << " recv_values: " << to_string(recv_values) << '\n';
-        // << "p" << r << " send_counts: " << to_string(send_counts) << '\n'
-        // << "p" << r << " send_displs: " << to_string(send_displs) << '\n'
-        // << "p" << r << " recv_counts: " << to_string(recv_counts) << '\n'
-        // << "p" << r << " recv_displs: " << to_string(recv_displs) << '\n';
+        // << "p" << r << " recv_values: " << to_string(recv_values, n_recv) << '\n';
+        // << "p" << r << " send_counts: " << to_string(all_send_counts[r], q) << '\n'
+        // << "p" << r << " send_displs: " << to_string(send_displs, q) << '\n'
+        // << "p" << r << " recv_counts: " << to_string(recv_counts, q) << '\n'
+        // << "p" << r << " recv_displs: " << to_string(recv_displs, q) << '\n';
 
     // Copy received values into the local array.
-    values_local.resize(recv_values.size());
-    for (int i = 0; i < recv_values.size(); i++) values_local[i] = recv_values[i];
+    values_local.resize(n_recv);
+    for (int i = 0; i < n_recv; i++) values_local[i] = recv_values[i];
 
     // Create two new communicators corresponding to the two partitions.
     MPI_Comm new_comm;
