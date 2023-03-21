@@ -126,15 +126,17 @@ void quicksort_parallel(vector<int> &values_local, size_t m, MPI_Comm comm) {
     // Calculate the matrix of send counts for _all_ processor.
     // Then use this matrix to find all `Alltoallv` values for this processor.
     // Has q^2 complexity but much easier to implement and understand than calculating both send & receive together in a single loop.
+    // Share destination iterators across all source processors to round-robin sends across the left & right groups evenly.
     int all_send_counts[q][q];
-    for (int from_q = 0; from_q < q; from_q++) {
-        auto &send_counts = all_send_counts[from_q];
+    int i_l = 0, i_r = 0;
+    for (int source_q = 0; source_q < q; source_q++) {
+        auto &send_counts = all_send_counts[source_q];
         // Initialize all send counts to 0.
-        for (int j = 0; j < q; j++) send_counts[j] = 0;
+        for (int i = 0; i < q; i++) send_counts[i] = 0;
         // Distribute all of `from_q`'s left values across the left group.
-        for (int i_l = 0; i_l < M_l[from_q]; i_l++) send_counts[i_l % q_l]++;
+        for (int _ = 0; _ < M_l[source_q]; _++) send_counts[i_l++ % q_l]++;
         // Distribute all of `from_q`'s right values across the right group.
-        for (int i_r = 0; i_r < M_r[from_q]; i_r++) send_counts[q_l + (i_r % q_r)]++;
+        for (int _ = 0; _ < M_r[source_q]; _++) send_counts[q_l + (i_r++ % q_r)]++;
     }
 
     int send_displs[q], recv_counts[q], recv_displs[q];
@@ -157,7 +159,7 @@ void quicksort_parallel(vector<int> &values_local, size_t m, MPI_Comm comm) {
         // << "p" << r << " q_l = " << q_l << ", q_r = " << q_r << '\n'
         // << "p" << r << " group = " << (is_left ? "left" : "right") << '\n'
         // << "p" << r << " values_local: " << to_string(values_local) << '\n'
-        // << "p" << r << " recv_values: " << to_string(recv_values, n_recv) << '\n';
+        // << "p" << r << " recv_values: " << to_string(recv_values, n_recv) << '\n'
         // << "p" << r << " send_counts: " << to_string(all_send_counts[r], q) << '\n'
         // << "p" << r << " send_displs: " << to_string(send_displs, q) << '\n'
         // << "p" << r << " recv_counts: " << to_string(recv_counts, q) << '\n'
