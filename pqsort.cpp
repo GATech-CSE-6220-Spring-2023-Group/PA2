@@ -10,27 +10,6 @@
 using std::string;
 using std::to_string;
 using std::vector;
-using std::cout;
-
-string to_string(vector<int> values) {
-    string s = "[";
-    for (int i = 0; i < values.size(); i++) {
-        s += to_string(values[i]);
-        if (i < values.size() - 1) s += ", ";
-    }
-    s += "]";
-    return s;
-}
-
-string to_string(int values[], int size) {
-    string s = "[";
-    for (int i = 0; i < size; i++) {
-        s += to_string(values[i]);
-        if (i < size - 1) s += ", ";
-    }
-    s += "]";
-    return s;
-}
 
 constexpr int ROOT = 0;
 
@@ -151,20 +130,6 @@ void quicksort_parallel(vector<int> &values_local, size_t m, MPI_Comm comm) {
     int recv_values[n_recv];
     MPI_Alltoallv(&values_local[0], &all_send_counts[r][0], &send_displs[0], MPI_INT, &recv_values[0], &recv_counts[0], &recv_displs[0], MPI_INT, comm);
 
-    // Debug
-    // cout << "p" << r << " pivot_i = " << pivot_i << ", pivot_r = " << pivot_r << '\n'
-        // << "p" << r << " pivot " << pivot << '\n'
-        // << "p" << r << " m_l = " << m_l << ", m_r = " << m_r << '\n'
-        // << "p" << r << " m_l_local = " << m_l_local << ", m_r_local = " << m_r_local << '\n'
-        // << "p" << r << " q_l = " << q_l << ", q_r = " << q_r << '\n'
-        // << "p" << r << " group = " << (is_left ? "left" : "right") << '\n'
-        // << "p" << r << " values_local: " << to_string(values_local) << '\n'
-        // << "p" << r << " recv_values: " << to_string(recv_values, n_recv) << '\n'
-        // << "p" << r << " send_counts: " << to_string(all_send_counts[r], q) << '\n'
-        // << "p" << r << " send_displs: " << to_string(send_displs, q) << '\n'
-        // << "p" << r << " recv_counts: " << to_string(recv_counts, q) << '\n'
-        // << "p" << r << " recv_displs: " << to_string(recv_displs, q) << '\n';
-
     // Copy received values into the local array.
     values_local.resize(n_recv);
     for (int i = 0; i < n_recv; i++) values_local[i] = recv_values[i];
@@ -225,18 +190,18 @@ int main(int argc, char* argv[]) {
     quicksort_parallel(values_local, n, MPI_COMM_WORLD);
     const double end_time_s = MPI_Wtime();
 
-    // Gather the lengths and displacements of each processor's local array (which could have changed sizes due to partitioning).
-    const int n_local_sorted = values_local.size();
-    vector<int> n_local_sorted_all, n_local_sorted_displs;
+    // Gather the lengths and displacements of each processor's sorted array (which could have changed sizes due to partitioning).
+    const int n_sorted = values_local.size();
+    vector<int> n_sorted_all, n_sorted_displs;
     if (is_root) {
-        n_local_sorted_all.resize(p);
-        n_local_sorted_displs.resize(p);
+        n_sorted_all.resize(p);
+        n_sorted_displs.resize(p);
     }
-    MPI_Gather(&n_local_sorted, 1, MPI_INT, &n_local_sorted_all[0], 1, MPI_INT, ROOT, MPI_COMM_WORLD);
-    if (is_root) for (int i = 1; i < p; i++) n_local_sorted_displs[i] = n_local_sorted_displs[i - 1] + n_local_sorted_all[i - 1];
+    MPI_Gather(&n_sorted, 1, MPI_INT, &n_sorted_all[0], 1, MPI_INT, ROOT, MPI_COMM_WORLD);
+    if (is_root) for (int i = 1; i < p; i++) n_sorted_displs[i] = n_sorted_displs[i - 1] + n_sorted_all[i - 1];
 
     // Gather the values to root, overwriting the `values_global` vector.
-    MPI_Gatherv(&values_local[0], values_local.size(), MPI_INT,  &values_global[0], &n_local_sorted_all[0], &n_local_sorted_displs[0], MPI_INT, ROOT, MPI_COMM_WORLD);
+    MPI_Gatherv(&values_local[0], values_local.size(), MPI_INT,  &values_global[0], &n_sorted_all[0], &n_sorted_displs[0], MPI_INT, ROOT, MPI_COMM_WORLD);
 
     if (is_root) {
         const string output_file_path = argv[2];
