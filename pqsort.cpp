@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <fstream>
 #include <iostream>
 #include <mpi.h>
@@ -10,20 +11,6 @@ using std::string;
 using std::to_string;
 using std::vector;
 using std::cout;
-
-void quicksort_serial(vector<int>& values, int left, int right) {
-    if (left >= right || values.empty()) return;
-
-    const int pivot = values[left + (right - left) / 2];
-    int i = left, j = right;
-    while (i <= j) {
-        while (values[i] < pivot) i++;
-        while (values[j] > pivot) j--;
-        if (i <= j) std::swap(values[i++], values[j--]);
-    }
-    quicksort_serial(values, left, j);
-    quicksort_serial(values, i, right);
-}
 
 string to_string(vector<int> values) {
     string s = "[";
@@ -63,7 +50,7 @@ void quicksort_parallel(vector<int> &values_local, size_t m, MPI_Comm comm) {
     const int m_local = values_local.size();
     if (m_local == 0) return; // Nothing to do.
     if (q == 0) throw std::runtime_error("quicksort_parallel: Empty communicator assigned " + to_string(m_local) + " values to sort.");
-    if (q == 1) return quicksort_serial(values_local, 0, m_local - 1); // Only one processor in `comm`. Sort serially.
+    if (q == 1) return std::sort(values_local.begin(), values_local.end()); // Only one processor in `comm`. Sort serially.
 
     /**
       Generate a pivot and broadcast the pivot value to all processors in `comm`:
