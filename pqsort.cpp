@@ -114,31 +114,36 @@ void quicksort_parallel(vector<int> &values_local, size_t m, MPI_Comm comm) {
     else if (q_r == 0) q_l = q - 1, q_r = 1;
     const bool is_left = r < q_l;
 
-    // Calculate the matrix of send counts for _all_ processors.
-    // Then use this matrix to find all `Alltoallv` values for this processor.
-    // Has q^2 complexity but much easier to implement and understand than calculating both send & receive together in a single loop.
+    // Find all `Alltoallv` values for this processor.
     // Share destination iterators across all source processors to round-robin sends across the left & right groups evenly.
-    int all_send_counts[q][q];
+    // Has q^2 complexity but easier to implement and understand than calculating both send & receive together in a single loop.
+    int send_counts[q], recv_counts[q];
+    for (int i = 0; i < q; i++) send_counts[i] = recv_counts[i] = 0;
+
     int i_l = 0, i_r = 0;
     for (int source_q = 0; source_q < q; source_q++) {
-        auto &send_counts = all_send_counts[source_q];
-        // Initialize all send counts to 0.
-        for (int i = 0; i < q; i++) send_counts[i] = 0;
-        // Distribute all of `from_q`'s left values across the left group.
-        for (int _ = 0; _ < M_l[source_q]; _++) send_counts[i_l++ % q_l]++;
-        // Distribute all of `from_q`'s right values across the right group.
-        for (int _ = 0; _ < M_r[source_q]; _++) send_counts[q_l + (i_r++ % q_r)]++;
+        // Distribute all of `source_q`'s left values across the left group.
+        for (int _ = 0; _ < M_l[source_q]; _++) {
+            const int dest_q = i_l++ % q_l;
+            if (source_q == r) send_counts[dest_q]++;
+            if (dest_q == r) recv_counts[source_q]++;
+        }
+        // Distribute all of `source_q`'s right values across the right group.
+        for (int _ = 0; _ < M_r[source_q]; _++) {
+            const int dest_q = q_l + (i_r++ % q_r);
+            if (source_q == r) send_counts[dest_q]++;
+            if (dest_q == r) recv_counts[source_q]++;
+        }
     }
 
-    int send_displs[q], recv_counts[q], recv_displs[q];
-    for (int i = 0; i < q; i++) recv_counts[i] = all_send_counts[i][r];
-    fill_displacements(send_displs, all_send_counts[r], q);
+    int send_displs[q], recv_displs[q];
+    fill_displacements(send_displs, send_counts, q);
     fill_displacements(recv_displs, recv_counts, q);
 
     // Transfer the data so that first `q_l` processors have values <= pivot, and the rest have values > pivot.
     const int n_recv = recv_displs[q - 1] + recv_counts[q - 1]; // Total number of values to receive on this processor.
     int recv_values[n_recv];
-    MPI_Alltoallv(&values_local[0], &all_send_counts[r][0], &send_displs[0], MPI_INT, &recv_values[0], &recv_counts[0], &recv_displs[0], MPI_INT, comm);
+    MPI_Alltoallv(&values_local[0], &send_counts[0], &send_displs[0], MPI_INT, &recv_values[0], &recv_counts[0], &recv_displs[0], MPI_INT, comm);
 
     // Copy received values into the local array.
     values_local.resize(n_recv);
