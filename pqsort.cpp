@@ -57,7 +57,8 @@ void quicksort_parallel(vector<int> &values_local, size_t m, MPI_Comm comm) {
 
     int M_local[q]; // Holds the lengths of each processor's local array.
     MPI_Allgather(&m_local, 1, MPI_INT, &M_local[0], 1, MPI_INT, comm);
-    int pivot_r = 0; // Rank of the processor that has the pivot. All processors need to find this to broadcast the pivot value.
+
+    int pivot_r = 0; // Rank of the processor that has the pivot. All processors need to find this rank to participate in the broadcast of the pivot value.
     int pivot; // Only gets populated on the processor that has the pivot.
     int global_i = 0; // Running sum of the lengths of all processors' local arrays.
     for (int i = 0; i < q; i++) {
@@ -88,13 +89,14 @@ void quicksort_parallel(vector<int> &values_local, size_t m, MPI_Comm comm) {
     const int m_l = std::reduce(M_l.begin(), M_l.end());
     const int m_r = std::reduce(M_r.begin(), M_r.end());
 
-    /* Partition the `q` processors into two subproblems of sorting `m_l` and `m_r` values, allocating processors proportionally. */
-
-    /** 
+    /**
+      Partition the `q` processors into two subproblems of sorting `m_l` and `m_r` values, allocating processors proportionally.
+      Note: If `m_l` or `m_r` is 0, we still partition the processors into two groups with at least one processor in each group,
+        but the single processor in the empty group will receive no elements.
       Compute the number of processors in the left/right groups by satisfying the following constraints:
-      * `q_l + q_r = q` (use all processors)
-      * `q_l/q_r = m_l/m_r` (assign processors proportionally to problem sizes)
-      * `q_l > 0, q_r > 0` (assign at least one processor to each group)
+        * `q_l + q_r = q` (use all processors)
+        * `q_l/q_r = m_l/m_r` (assign processors proportionally to problem sizes)
+        * `q_l > 0, q_r > 0` (assign at least one processor to each group)
     */
     int q_l = round(float(q * m_l) / float(m_l + m_r)); // Round to nearest integer instead of truncating.
     int q_r = q - q_l;
@@ -102,7 +104,7 @@ void quicksort_parallel(vector<int> &values_local, size_t m, MPI_Comm comm) {
     else if (q_r == 0) q_l = q - 1, q_r = 1;
     const bool is_left = r < q_l;
 
-    // Calculate the matrix of send counts for _all_ processor.
+    // Calculate the matrix of send counts for _all_ processors.
     // Then use this matrix to find all `Alltoallv` values for this processor.
     // Has q^2 complexity but much easier to implement and understand than calculating both send & receive together in a single loop.
     // Share destination iterators across all source processors to round-robin sends across the left & right groups evenly.
