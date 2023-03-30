@@ -143,8 +143,6 @@ void quicksort_parallel(vector<int> &values_local, size_t m, MPI_Comm comm) {
         }
     }
 
-    std::cout << "Processor " << r << " of " << q << " send_counts: " << to_string(send_counts, q) << ", recv_counts: " << to_string(recv_counts, q) << std::endl;
-
     int send_displs[q], recv_displs[q];
     fill_displacements(send_displs, send_counts, q);
     fill_displacements(recv_displs, recv_counts, q);
@@ -237,7 +235,7 @@ int main(int argc, char* argv[]) {
         for (int i = 0; i < n; i++) {
             output_file_stream << values_global[i] << (i == n - 1 ? "" : " ");
         }
-        output_file_stream << '\n' << std::fixed << std::setprecision(6) << end_time_s - start_time_s << '\n';
+        output_file_stream << '\n' << std::fixed << std::setprecision(6) << (end_time_s - start_time_s) * 1000.0 << '\n';
         output_file_stream.close();
     }
     MPI_Finalize();
