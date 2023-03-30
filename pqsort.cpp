@@ -20,7 +20,15 @@ void fill_displacements(int displs[], int counts[], int n) {
         displs[i] = i == 0 ? 0 : displs[i - 1] + counts[i - 1];
     }
 }
-
+string to_string(int values[], int size) {
+    string s = "[";
+    for (int i = 0; i < size; i++) {
+        s += to_string(values[i]);
+        if (i < size - 1) s += ", ";
+    }
+    s += "]";
+    return s;
+}
  /**
   Communicator `comm` has `q` processors on which `m` block-distributed integers should be sorted.
   `values_local` contains the contiguous subset of the `m` unsorted values distributed to this processor.
@@ -116,7 +124,6 @@ void quicksort_parallel(vector<int> &values_local, size_t m, MPI_Comm comm) {
 
     // Find all `Alltoallv` values for this processor.
     // Share destination iterators across all source processors to round-robin sends across the left & right groups evenly.
-    // Has q^2 complexity but easier to implement and understand than calculating both send & receive together in a single loop.
     int send_counts[q], recv_counts[q];
     for (int i = 0; i < q; i++) send_counts[i] = recv_counts[i] = 0;
 
@@ -135,6 +142,8 @@ void quicksort_parallel(vector<int> &values_local, size_t m, MPI_Comm comm) {
             if (dest_q == r) recv_counts[source_q]++;
         }
     }
+
+    std::cout << "Processor " << r << " of " << q << " send_counts: " << to_string(send_counts, q) << ", recv_counts: " << to_string(recv_counts, q) << std::endl;
 
     int send_displs[q], recv_displs[q];
     fill_displacements(send_displs, send_counts, q);
