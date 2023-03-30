@@ -13,6 +13,14 @@ using std::vector;
 
 constexpr int ROOT = 0;
 
+// Fill the provided displacements array based on the counts array, both of size `n`,
+// for use with MPI communication primitives.
+void fill_displacements(int displs[], int counts[], int n) {
+    for (int i = 0; i < n; i++) {
+        displs[i] = i == 0 ? 0 : displs[i - 1] + counts[i - 1];
+    }
+}
+
  /**
   Communicator `comm` has `q` processors on which `m` block-distributed integers should be sorted.
   `values_local` contains the contiguous subset of the `m` unsorted values distributed to this processor.
@@ -25,9 +33,11 @@ constexpr int ROOT = 0;
   * Use an `AllGather` to gather the `m_l_local` and `m_r_local` subarray sizes for each processor across every processor in `comm`,
     storing in arrays `M_l` and `M_r` respectively.
   * Using `M_l` and `M_r`, compute the total number of integers <= pivot (`m_l`) and > pivot (`m_r`).
-  * Partition the `q` processors into two subproblems of sorting `m_l` and `m_r` values by allocating processors proportionally.
+  * Partition the `q` processors into two subgroups of size `q_l` and `q_r` (with at least one processor each),
+    by allocating processors proportionally.
+  * Assign `q_l` and `q_r` the tasks of sorting `m_l` and `m_r` values, respectively.
   * On each processor, use `M_l` and `M_r` to compute where to send its data and from where to receive its data.
-  * Use an `AllToAll` to perform the data transfer.
+  * Use an `Alltoallv` to perform the data transfer.
   * Create two new communicators corresponding to the two partitions.
   * Recursively call `quicksort_parallel` within each partition.
 */
@@ -121,11 +131,9 @@ void quicksort_parallel(vector<int> &values_local, size_t m, MPI_Comm comm) {
     }
 
     int send_displs[q], recv_counts[q], recv_displs[q];
-    for (int i = 0; i < q; i++) {
-        send_displs[i] = i == 0 ? 0 : send_displs[i - 1] + all_send_counts[r][i - 1];
-        recv_counts[i] = all_send_counts[i][r];
-        recv_displs[i] = i == 0 ? 0 : recv_displs[i - 1] + recv_counts[i - 1];
-    }
+    for (int i = 0; i < q; i++) recv_counts[i] = all_send_counts[i][r];
+    fill_displacements(send_displs, all_send_counts[r], q);
+    fill_displacements(recv_displs, recv_counts, q);
 
     // Transfer the data so that first `q_l` processors have values <= pivot, and the rest have values > pivot.
     const int n_recv = recv_displs[q - 1] + recv_counts[q - 1]; // Total number of values to receive on this processor.
@@ -183,11 +191,13 @@ int main(int argc, char* argv[]) {
         n_local_displs.resize(p);
         for (int i = 0; i < p; i++) {
             n_local_all[i] = n / p + (i < n % p ? 1 : 0);
-            n_local_displs[i] = i == 0 ? 0 : n_local_displs[i - 1] + n_local_all[i - 1];
         }
+        fill_displacements(&n_local_displs[0], &n_local_all[0], p);
     }
     vector<int> values_local(n / p + (r < n % p ? 1 : 0));
     MPI_Scatterv(&values_global[0], &n_local_all[0], &n_local_displs[0], MPI_INT, &values_local[0], values_local.size(), MPI_INT, ROOT, MPI_COMM_WORLD);
+
+    // Run parallel quicksort. Note that this may change the size of `values_local`.
     const double start_time_s = MPI_Wtime();
     quicksort_parallel(values_local, n, MPI_COMM_WORLD);
     const double end_time_s = MPI_Wtime();
@@ -200,9 +210,9 @@ int main(int argc, char* argv[]) {
         n_sorted_displs.resize(p);
     }
     MPI_Gather(&n_sorted, 1, MPI_INT, &n_sorted_all[0], 1, MPI_INT, ROOT, MPI_COMM_WORLD);
-    if (is_root) for (int i = 1; i < p; i++) n_sorted_displs[i] = n_sorted_displs[i - 1] + n_sorted_all[i - 1];
 
     // Gather the values to root, overwriting the `values_global` vector.
+    if (is_root) fill_displacements(&n_sorted_displs[0], &n_sorted_all[0], p);
     MPI_Gatherv(&values_local[0], values_local.size(), MPI_INT,  &values_global[0], &n_sorted_all[0], &n_sorted_displs[0], MPI_INT, ROOT, MPI_COMM_WORLD);
 
     if (is_root) {
