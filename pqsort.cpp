@@ -70,7 +70,8 @@ void quicksort_parallel(vector<int> &values_local, size_t m, MPI_Comm comm) {
     MPI_Comm_rank(comm, &r);
 
     const int m_local = values_local.size();
-    if (m_local == 0) return; // Nothing to do.
+    // If `m_local` is 0, then there's nothing to sort, but we still need to participate in the communication primitive calls.
+
     if (q == 0) throw std::runtime_error("quicksort_parallel: Empty communicator assigned " + to_string(m_local) + " values to sort.");
     // Using a serial quicksort for better benchmarking, since it's most similar to the parallel version.
     if (q == 1) return quicksort_serial(values_local, 0, m_local - 1);
