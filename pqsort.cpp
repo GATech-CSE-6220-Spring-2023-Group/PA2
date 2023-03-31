@@ -51,8 +51,10 @@ string to_string(int values[], int size) {
   If `q = 1`, sort the values serially on the group's only processor.
   Otherwise, sort in parallel as follows:
   * All processors in `comm` generate a random number `k` between 0 and m − 1.
+  * Use an `AllGather` to gather the `m_local` lengths of each processor's local array onto every processor in `comm`,
+    storing in array `M_local`. (This is needed to find the rank of the processor that has the pivot.)
   * The processor that has the pivot broadcasts it to all processors in the communicator.
-  * Each processor partitions its values into two subarrays, with left `m_l_local` values <= pivot and right `m_r_local` values > pivot.
+  * Each processor arranges its local values in-place so the left `m_l_local` values <= pivot and right `m_r_local` values > pivot.
   * Use an `AllGather` to gather the `m_l_local` and `m_r_local` subarray sizes for each processor across every processor in `comm`,
     storing in arrays `M_l` and `M_r` respectively.
   * Using `M_l` and `M_r`, compute the total number of integers <= pivot (`m_l`) and > pivot (`m_r`).
@@ -107,7 +109,7 @@ void quicksort_parallel(vector<int> &values_local, size_t m, MPI_Comm comm) {
 
     MPI_Bcast(&pivot, 1, MPI_INT, pivot_r, comm);
 
-    // Arrange local values so the left `m_l_local` values <= pivot and right `m_r_local` values > pivot.
+    // Arrange local values in-place so the left `m_l_local` values <= pivot and right `m_r_local` values > pivot.
     int i = 0, j = m_local - 1;
     while (i <= j) {
         while (i <= j && values_local[i] <= pivot) i++;
@@ -140,24 +142,19 @@ void quicksort_parallel(vector<int> &values_local, size_t m, MPI_Comm comm) {
     const bool is_left = r < q_l;
 
     // Find all `Alltoallv` values for this processor.
-    // Share destination iterators across all source processors to round-robin sends across the left & right groups evenly.
     int send_counts[q], recv_counts[q];
-    for (int i = 0; i < q; i++) send_counts[i] = recv_counts[i] = 0;
-
-    int i_l = 0, i_r = 0;
+    for (int dest_q = 0; dest_q < q; dest_q++) {
+        // Distribute all of this processor's left values across the left group,
+        // and all of its right values across the right group.
+        send_counts[dest_q] = dest_q < q_l ?
+            m_l_local / q_l + (dest_q < m_l_local % q_l ? 1 : 0) :
+            m_r_local / q_r + ((dest_q - q_l) < m_r_local % q_r ? 1 : 0);
+    }
     for (int source_q = 0; source_q < q; source_q++) {
-        // Distribute all of `source_q`'s left values across the left group.
-        for (int _ = 0; _ < M_l[source_q]; _++) {
-            const int dest_q = i_l++ % q_l;
-            if (source_q == r) send_counts[dest_q]++;
-            if (dest_q == r) recv_counts[source_q]++;
-        }
-        // Distribute all of `source_q`'s right values across the right group.
-        for (int _ = 0; _ < M_r[source_q]; _++) {
-            const int dest_q = q_l + (i_r++ % q_r);
-            if (source_q == r) send_counts[dest_q]++;
-            if (dest_q == r) recv_counts[source_q]++;
-        }
+        // Receive all of this processor's values from all members of its group.
+        recv_counts[source_q] = is_left ?
+            M_l[source_q] / q_l + (r < M_l[source_q] % q_l ? 1 : 0) :
+            M_r[source_q] / q_r + ((r - q_l) < M_r[source_q]  % q_r ? 1 : 0);
     }
 
     int send_displs[q], recv_displs[q];
