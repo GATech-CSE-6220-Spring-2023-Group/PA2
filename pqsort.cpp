@@ -35,16 +35,8 @@ void fill_displacements(int displs[], int counts[], int n) {
         displs[i] = i == 0 ? 0 : displs[i - 1] + counts[i - 1];
     }
 }
-string to_string(int values[], int size) {
-    string s = "[";
-    for (int i = 0; i < size; i++) {
-        s += to_string(values[i]);
-        if (i < size - 1) s += ", ";
-    }
-    s += "]";
-    return s;
-}
- /**
+
+/**
   Communicator `comm` has `q` processors on which `m` block-distributed integers should be sorted.
   `values_local` contains the contiguous subset of the `m` unsorted values distributed to this processor.
 
@@ -154,7 +146,7 @@ void quicksort_parallel(vector<int> &values_local, size_t m, MPI_Comm comm) {
         // Receive all of this processor's values from all members of its group.
         recv_counts[source_q] = is_left ?
             M_l[source_q] / q_l + (r < M_l[source_q] % q_l ? 1 : 0) :
-            M_r[source_q] / q_r + ((r - q_l) < M_r[source_q]  % q_r ? 1 : 0);
+            M_r[source_q] / q_r + ((r - q_l) < M_r[source_q] % q_r ? 1 : 0);
     }
 
     int send_displs[q], recv_displs[q];
