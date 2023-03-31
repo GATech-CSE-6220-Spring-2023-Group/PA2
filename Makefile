@@ -7,7 +7,7 @@ pqsort: pqsort.cpp
 	mpic++ -o pqsort pqsort.cpp
 
 run: pqsort
-	mpirun -np $(p) ./pqsort $(in) $(out)
+	mpiexec -np $(p) ./pqsort $(in) $(out)
 
 clean:
 	rm pqsort
