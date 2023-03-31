@@ -6,6 +6,7 @@
 #include <random>
 #include <string>
 #include <vector>
+#include <iomanip>
 
 using std::string;
 using std::to_string;
@@ -119,8 +120,8 @@ void quicksort_parallel(vector<int> &values_local, size_t m, MPI_Comm comm) {
     vector<int> M_l(q), M_r(q);
     MPI_Allgather(&m_l_local, 1, MPI_INT, &M_l[0], 1, MPI_INT, comm);
     MPI_Allgather(&m_r_local, 1, MPI_INT, &M_r[0], 1, MPI_INT, comm);
-    const int m_l = std::reduce(M_l.begin(), M_l.end());
-    const int m_r = std::reduce(M_r.begin(), M_r.end());
+    const int m_l = std::accumulate(M_l.begin(), M_l.end(), 0);
+    const int m_r = std::accumulate(M_r.begin(), M_r.end(), 0);
 
     /**
       Partition the `q` processors into two subproblems of sorting `m_l` and `m_r` values, allocating processors proportionally.
